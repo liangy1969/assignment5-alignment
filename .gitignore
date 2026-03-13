@@ -1,6 +1,8 @@
 *.bin
 models/
 data/
+exp_results/
+train_output/
 
 nav
 tags

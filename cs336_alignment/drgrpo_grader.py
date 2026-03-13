@@ -983,15 +983,29 @@ def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
     return False
 
 
-def extract_answer(passage: str) -> str:
+def extract_answer(passage: str) -> Optional[str]:
+    if passage is None:
+        return None
+
     if "\\boxed" in passage:
-        return extract_boxed_answer(passage)
+        boxed = extract_boxed_answer(passage)
+        if boxed is not None:
+            return boxed.strip()
+
+    # GSM8K-style annotations store the final result as: "#### <answer>".
+    # Keep only the final segment to drop intermediate reasoning.
+    if "####" in passage:
+        final_segment = passage.rsplit("####", 1)[-1].strip()
+        if final_segment:
+            return final_segment.splitlines()[0].strip()
+
     return None
 
 
 def grade(model_answer: str, gt_answer: str, fast: bool = True):
-    if "\\boxed" in gt_answer:
-        gt_answer = extract_answer(gt_answer)
+    extracted_gt = extract_answer(gt_answer)
+    if extracted_gt is not None:
+        gt_answer = extracted_gt
     correct = grade_answer_mathd(model_answer, gt_answer) or grade_answer_sympy(
         model_answer, gt_answer
     )

@@ -10,6 +10,8 @@ dependencies = [
     "flash-attn==2.7.4.post1",
     "jupyter>=1.1.1",
     "math-verify[antlr4-13-2]>=0.7.0",
+    "numpy>=1.26",
+    "peft>=0.13.0",
     "pylatexenc==2.10",
     "notebook>=7.4.2",
     "pytest>=8.3.5",
