@@ -1,4 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import argparse
 import os
 import json
 import torch
@@ -48,13 +49,11 @@ def load_gsm8k_train_data() -> list[dict]:
                     "question": question,
                     "answer": answer,
                     "prompt": prompt,
-                    "output": output
+                    "output": output,
                 }
             )
     logger.info(
-        "loaded %d / %d train samples",
-        len(train_data_processed),
-        len(train_data)
+        "loaded %d / %d train samples", len(train_data_processed), len(train_data)
     )
 
     return train_data_processed
@@ -90,7 +89,7 @@ def sft_training_loop(
                         epoch_idx,
                         step_idx,
                         loss.item(),
-                        log_probs["token_entropy"].mean().item()
+                        log_probs["token_entropy"].mean().item(),
                     )
                 update_idx += 1
             step_idx += 1
@@ -177,4 +176,29 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    train_script()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model", type=str, default="Qwen/Qwen2.5-Math-1.5B", dest="model_name"
+    )
+    parser.add_argument(
+        "--expt", type=str, default="Qwen2.5_Math_1.5B_SFT", dest="expt_name"
+    )
+    parser.add_argument("--batch_size", type=int, default=1, dest="micro_batch_size")
+    parser.add_argument(
+        "--accum_steps", type=int, default=16, dest="gradient_accumulation_steps"
+    )
+    parser.add_argument("--epochs", type=int, default=1, dest="n_epoch")
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument(
+        "--use_lora", action=argparse.BooleanOptionalAction, default=True
+    )
+    args = parser.parse_args()
+    train_script(
+        model_name=args.model_name,
+        expt_name=args.expt_name,
+        micro_batch_size=args.micro_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        n_epoch=args.n_epoch,
+        lr=args.lr,
+        use_lora=args.use_lora,
+    )

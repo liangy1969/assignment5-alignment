@@ -1,6 +1,7 @@
 from transformers.models.auto.modeling_auto import AutoModelForCausalLM
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+import argparse
 import os
 import json
 import torch
@@ -182,8 +183,42 @@ def train_script(
 
             ei_step_idx += 1
 
+
 if __name__ == "__main__":
-    sft_dir = os.path.join(
-        os.path.dirname(__file__), "..", "train_output", "Qwen2.5_Math_1.5B_SFT"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    train_script(sft_dir)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model", type=str, default="Qwen/Qwen2.5-Math-1.5B", dest="model_name"
+    )
+    parser.add_argument(
+        "--expt", type=str, default="Qwen2.5_Math_1.5B_EI", dest="expt_name"
+    )
+    parser.add_argument("--ei_steps", type=int, default=5, dest="n_ei_step")
+    parser.add_argument("--ei_batch_size", type=int, default=2048)
+    parser.add_argument("--n_rollout", type=int, default=10)
+    parser.add_argument("--batch_size", type=int, default=4, dest="micro_batch_size")
+    parser.add_argument(
+        "--accum_steps", type=int, default=4, dest="gradient_accumulation_steps"
+    )
+    parser.add_argument("--sft_epochs", type=int, default=1, dest="n_sft_epoch")
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument(
+        "--use_lora", action=argparse.BooleanOptionalAction, default=True
+    )
+    args = parser.parse_args()
+    train_script(
+        model_name=args.model_name,
+        expt_name=args.expt_name,
+        n_ei_step=args.n_ei_step,
+        ei_batch_size=args.ei_batch_size,
+        n_rollout=args.n_rollout,
+        micro_batch_size=args.micro_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        n_sft_epoch=args.n_sft_epoch,
+        lr=args.lr,
+        use_lora=args.use_lora,
+    )
