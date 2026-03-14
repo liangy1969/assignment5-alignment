@@ -54,9 +54,11 @@ def sample_rollout_filter(
 
     responses = model.generate(prompt_list, sampling_param)
     filtered_data = []
+    all_rewards = []
     for sample, response in zip(data, responses):
         for output in response.outputs:
             reward_dict = r1_zero_reward_fn(output.text, sample["answer"])
+            all_rewards.append(reward_dict)
             if reward_dict["reward"] > 0.5:
                 filtered_data.append(
                     {
@@ -64,6 +66,17 @@ def sample_rollout_filter(
                         "output": output.text,
                     }
                 )
+    if all_rewards:
+        avg_format_reward = sum(r["format_reward"] for r in all_rewards) / len(
+            all_rewards
+        )
+        avg_answer_reward = sum(r["answer_reward"] for r in all_rewards) / len(
+            all_rewards
+        )
+        avg_reward = sum(r["reward"] for r in all_rewards) / len(all_rewards)
+        logger.info("rollout avg_format_reward: %.4f", avg_format_reward)
+        logger.info("rollout avg_answer_reward: %.4f", avg_answer_reward)
+        logger.info("rollout avg_reward: %.4f", avg_reward)
     return filtered_data
 
 
