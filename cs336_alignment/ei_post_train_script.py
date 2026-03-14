@@ -196,7 +196,7 @@ def train_script(
 
             ei_step_idx += 1
 
-
+# uv run ei_post_train_script.py --model ../train_output/Qwen2.5_Math_1.5B_SFT --ei_batch_size 1024 --batch_size 16 --accum_steps 1 --lr 1e-4
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,

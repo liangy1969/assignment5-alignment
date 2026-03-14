@@ -1,4 +1,5 @@
 from math import e
+import argparse
 import os
 
 from vllm import LLM, SamplingParams
@@ -7,9 +8,11 @@ import json
 from typing import Callable
 
 
-def main_baseline():
-    exp_name = "Qwen2.5_Math_1.5B_GSM_baseline"
-    model = LLM("Qwen/Qwen2.5-Math-1.5B")
+def main_baseline(
+    exp_name: str = "Qwen2.5_Math_1.5B_GSM_baseline",
+    model_name: str = "Qwen/Qwen2.5-Math-1.5B",
+):
+    model = LLM(model_name)
     param = SamplingParams(temperature=1.0, top_p=1.0, max_tokens=1024)
     param.stop = ["</answer>"]
     param.include_stop_str_in_output = True
@@ -68,4 +71,12 @@ def evaluate_gsm(exp_name: str, model: LLM, sampling_params: SamplingParams) -> 
 
 
 if __name__ == "__main__":
-    main_baseline()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model", type=str, default="Qwen/Qwen2.5-Math-1.5B", dest="model_name"
+    )
+    parser.add_argument(
+        "--expt", type=str, default="Qwen2.5_Math_1.5B_GSM_baseline", dest="exp_name"
+    )
+    args = parser.parse_args()
+    main_baseline(exp_name=args.exp_name, model_name=args.model_name)
