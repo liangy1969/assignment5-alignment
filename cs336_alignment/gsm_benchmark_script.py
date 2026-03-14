@@ -55,6 +55,7 @@ def evaluate_gsm(exp_name: str, model: LLM, sampling_params: SamplingParams) -> 
     output_path = os.path.join(
         os.path.dirname(__file__), "..", "exp_results", f"{exp_name}.jsonl"
     )
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
         for record in records:
             f.write(json.dumps(record) + "\n")
