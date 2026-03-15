@@ -17,6 +17,8 @@ from cs336_alignment.util import (
     compute_naive_policy_gradient_loss,
     compute_grpo_clip_loss,
     compute_policy_gradient_loss,
+    masked_mean,
+    grpo_microbatch_train_step,
 )
 
 
@@ -219,7 +221,7 @@ def run_masked_mean(
         torch.Tensor, the mean of the tensor along the specified
             dimension, considering only the elements with mask value 1.
     """
-    raise NotImplementedError
+    return masked_mean(tensor, mask, dim)
 
 
 def run_sft_microbatch_train_step(
@@ -270,7 +272,16 @@ def run_grpo_microbatch_train_step(
         tuple[torch.Tensor, dict[str, torch.Tensor]]:
             the policy gradient loss and its metadata.
     """
-    raise NotImplementedError
+    return grpo_microbatch_train_step(
+        policy_log_probs,
+        response_mask,
+        gradient_accumulation_steps,
+        loss_type,
+        raw_rewards,
+        advantages,
+        old_log_probs,
+        cliprange,
+    )
 
 
 def run_masked_normalize(
