@@ -21,6 +21,7 @@ dependencies = [
     "typer>=0.15.4",
     "vllm==0.7.2",
     "matplotlib>=3.8",
+    "tensorboard>=2.14",
     "wandb>=0.19.8",
     "xopen>=2.0.2",
 ]
