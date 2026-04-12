@@ -120,9 +120,8 @@ def grpo_rollout_batch_training_loop(
     update_idx: int,
     use_async_grpo: bool = False,
     async_grpo_apply_rollout_importance_sampling: bool = False,
-) -> tuple[int, int, dict[str, float]]:
-    losses = []
-    clip_fractions = []
+    metrics: MetricsTracker | None = None,
+) -> tuple[int, int]:
     for epoch_idx in range(n_epoch):
         optimizer.zero_grad()
         if use_async_grpo:
@@ -167,9 +166,12 @@ def grpo_rollout_batch_training_loop(
                 old_log_probs,
                 cliprange,
             )
-            losses.append(loss.item())
-            if "clip_fraction" in step_data:
-                clip_fractions.append(step_data["clip_fraction"].item())
+            if metrics:
+                metrics.log("loss", step_idx, loss.item())
+                if "clip_fraction" in step_data:
+                    metrics.log(
+                        "clip_fraction", step_idx, step_data["clip_fraction"].item()
+                    )
             if (step_idx + 1) % gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -184,13 +186,7 @@ def grpo_rollout_batch_training_loop(
                     )
                 update_idx += 1
             step_idx += 1
-    loop_metrics = {
-        "mean_loss": sum(losses) / len(losses) if losses else 0.0,
-        "mean_clip_fraction": (
-            sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0
-        ),
-    }
-    return step_idx, update_idx, loop_metrics
+    return step_idx, update_idx
 
 
 def rollout(
@@ -423,22 +419,17 @@ def train_script(
                     rollout_step_idx,
                     train_reward,
                 )
-            train_step_idx, train_update_idx, loop_metrics = (
-                grpo_rollout_batch_training_loop(
-                    policy_model,
-                    train_batch_dataloader,
-                    optimizer,
-                    device,
-                    gradient_accumulation_steps,
-                    grpo_clip_range,
-                    n_train_epoch_per_rollout,
-                    train_step_idx,
-                    train_update_idx,
-                )
-            )
-            metrics.log("loss", rollout_step_idx, loop_metrics["mean_loss"])
-            metrics.log(
-                "clip_fraction", rollout_step_idx, loop_metrics["mean_clip_fraction"]
+            train_step_idx, train_update_idx = grpo_rollout_batch_training_loop(
+                policy_model,
+                train_batch_dataloader,
+                optimizer,
+                device,
+                gradient_accumulation_steps,
+                grpo_clip_range,
+                n_train_epoch_per_rollout,
+                train_step_idx,
+                train_update_idx,
+                metrics=metrics,
             )
             rollout_model_path = os.path.join(
                 os.path.dirname(__file__),
@@ -449,6 +440,7 @@ def train_script(
             )
             os.makedirs(rollout_model_path, exist_ok=True)
             policy_model.cpu()
+            torch.cuda.empty_cache()
             if use_lora:
                 merged = copy.deepcopy(policy_model).merge_and_unload()
                 merged.save_pretrained(rollout_model_path)
