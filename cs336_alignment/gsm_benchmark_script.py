@@ -19,7 +19,7 @@ def main_baseline(
     evaluate_gsm(exp_name, model, param)
 
 
-def evaluate_gsm(exp_name: str, model: LLM, sampling_params: SamplingParams) -> None:
+def evaluate_gsm(exp_name: str, model: LLM, sampling_params: SamplingParams) -> float:
 
     prompt_file = os.path.join(os.path.dirname(__file__), "prompts", "r1_zero.prompt")
 
@@ -68,6 +68,7 @@ def evaluate_gsm(exp_name: str, model: LLM, sampling_params: SamplingParams) -> 
     print(f"Average format reward: {avg_format_reward:.4f}")
     print(f"Average reward: {avg_reward:.4f}")
     print(f"Results saved to {output_path}")
+    return avg_reward
 
 
 if __name__ == "__main__":

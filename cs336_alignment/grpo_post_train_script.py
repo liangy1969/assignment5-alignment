@@ -25,8 +25,74 @@ from peft import LoraConfig, get_peft_model
 from typing import Any
 import torch.nn.functional as F
 import copy
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from collections import defaultdict
+from torch.utils.tensorboard import SummaryWriter
 
 logger = logging.getLogger(__name__)
+
+
+class MetricsTracker:
+    """Tracks scalar metrics over training and exports them as figures."""
+
+    def __init__(self, log_file: str | None = None, tb_log_dir: str | None = None):
+        self.metrics: dict[str, list[tuple[int, float]]] = defaultdict(list)
+        self._log_file = log_file
+        self._tb_writer: SummaryWriter | None = None
+        if log_file:
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            with open(log_file, "w") as f:
+                pass
+        if tb_log_dir:
+            self._tb_writer = SummaryWriter(log_dir=tb_log_dir)
+
+    def log(self, name: str, step: int, value: float):
+        self.metrics[name].append((step, value))
+        if self._log_file:
+            with open(self._log_file, "a") as f:
+                f.write(
+                    json.dumps({"metric": name, "step": step, "value": value}) + "\n"
+                )
+        if self._tb_writer:
+            self._tb_writer.add_scalar(name, value, step)
+
+    def export_figures(self, output_dir: str):
+        os.makedirs(output_dir, exist_ok=True)
+        for name, values in self.metrics.items():
+            steps, vals = zip(*values)
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.plot(steps, vals)
+            ax.set_xlabel("Rollout Step")
+            ax.set_ylabel(name)
+            ax.set_title(name)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            safe_name = name.replace("/", "_").replace(" ", "_")
+            fig.savefig(os.path.join(output_dir, f"{safe_name}.png"), dpi=150)
+            plt.close(fig)
+        # combined figure
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
+        ordered = ["loss", "train_reward", "val_reward", "clip_fraction"]
+        for ax, key in zip(axes, ordered):
+            if key in self.metrics:
+                steps, vals = zip(*self.metrics[key])
+                ax.plot(steps, vals)
+                ax.set_title(key)
+                ax.set_xlabel("Rollout Step")
+                ax.grid(True, alpha=0.3)
+            else:
+                ax.set_visible(False)
+        fig.tight_layout()
+        fig.savefig(os.path.join(output_dir, "metrics_combined.png"), dpi=150)
+        plt.close(fig)
+
+    def close(self):
+        if self._tb_writer:
+            self._tb_writer.close()
 
 
 def get_rollout_samping_param(n_rollout: int) -> SamplingParams:
@@ -52,15 +118,42 @@ def grpo_rollout_batch_training_loop(
     n_epoch: int,
     step_idx: int,
     update_idx: int,
-) -> tuple[int, int]:
-    optimizer.zero_grad()
+    use_async_grpo: bool = False,
+    async_grpo_apply_rollout_importance_sampling: bool = False,
+) -> tuple[int, int, dict[str, float]]:
+    losses = []
+    clip_fractions = []
     for epoch_idx in range(n_epoch):
-        for train_batch in train_batch_loader:
+        optimizer.zero_grad()
+        if use_async_grpo:
+            train_batches = []
+            model.eval()
+            for train_batch in train_batch_loader:
+                input_ids = train_batch["input_ids"].to(device)
+                labels = train_batch["labels"].to(device)
+                log_probs_and_entropy = get_response_log_probs(
+                    model, input_ids, labels, True
+                )
+                old_log_probs = log_probs_and_entropy["log_probs"]  # type: ignore
+                if async_grpo_apply_rollout_importance_sampling:
+                    rollout_log_probs = train_batch["old_log_probs"].to(device)
+                    importance_weights = torch.exp(old_log_probs - rollout_log_probs)
+                    train_batch["importance_weights"] = importance_weights.cpu()
+                train_batch["old_log_probs"] = old_log_probs.cpu()  # type: ignore
+                train_batches.append(train_batch)
+            model.train()
+        else:
+            train_batches = train_batch_loader
+
+        for train_batch in train_batches:
             input_ids = train_batch["input_ids"].to(device)
             labels = train_batch["labels"].to(device)
             response_mask = train_batch["response_mask"].to(device)
             old_log_probs = train_batch["old_log_probs"].to(device)
             advantages = train_batch["advantages"].to(device)
+            importance_weights = train_batch.get("importance_weights", None)
+            if importance_weights is not None:
+                importance_weights = importance_weights.to(device)
             log_probs_and_entropy = get_response_log_probs(
                 model, input_ids, labels, True
             )
@@ -74,6 +167,9 @@ def grpo_rollout_batch_training_loop(
                 old_log_probs,
                 cliprange,
             )
+            losses.append(loss.item())
+            if "clip_fraction" in step_data:
+                clip_fractions.append(step_data["clip_fraction"].item())
             if (step_idx + 1) % gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -88,7 +184,13 @@ def grpo_rollout_batch_training_loop(
                     )
                 update_idx += 1
             step_idx += 1
-    return step_idx, update_idx
+    loop_metrics = {
+        "mean_loss": sum(losses) / len(losses) if losses else 0.0,
+        "mean_clip_fraction": (
+            sum(clip_fractions) / len(clip_fractions) if clip_fractions else 0.0
+        ),
+    }
+    return step_idx, update_idx, loop_metrics
 
 
 def rollout(
@@ -214,6 +316,7 @@ def train_script(
     grpo_clip_range: float = 0.2,
     use_std_normalization=True,
     eval_every_n_step: int = 50,
+    use_async_grpo: bool = False,
 ):
     advantage_eps: float = 1e-6
     assert (
@@ -229,6 +332,12 @@ def train_script(
     optimizer: torch.optim.Optimizer | None = None
     rollout_model_path: str = model_name
 
+    # async grpo assert
+    if use_async_grpo:
+        assert (
+            n_train_epoch_per_rollout > 1
+        ), "async grpo only supports more than 1 train epoch per rollout batch"
+
     # define the train dataset
     data = load_gsm8k_train_data()
     assert n_prompts_per_rollout_batch <= len(data)
@@ -238,6 +347,12 @@ def train_script(
         shuffle=True,
         drop_last=True,
         collate_fn=lambda batch: batch,
+    )
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "train_output", expt_name)
+    tb_dir = os.path.join(log_dir, "tb_logs")
+    metrics = MetricsTracker(
+        log_file=os.path.join(log_dir, "metrics.jsonl"),
+        tb_log_dir=tb_dir,
     )
     rollout_step_idx = 0
     train_step_idx = 0
@@ -252,7 +367,11 @@ def train_script(
                 eval_param = SamplingParams(temperature=1.0, top_p=1.0, max_tokens=1024)
                 eval_param.stop = ["</answer>"]
                 eval_param.include_stop_str_in_output = True
-                evaluate_gsm(expt_name, vllm, eval_param)
+                val_reward = evaluate_gsm(expt_name, vllm, eval_param)
+                metrics.log("val_reward", rollout_step_idx, val_reward)
+                logger.info(
+                    "Rollout step %d, val reward %.4f", rollout_step_idx, val_reward
+                )
             rollout_data = rollout(vllm, prompt_batch, sampling_param)
             del vllm
             torch.cuda.empty_cache()
@@ -296,22 +415,30 @@ def train_script(
                 )
             )
             policy_model.train()
+            train_reward = rollout_metadata["raw_reward_mean"].item()
+            metrics.log("train_reward", rollout_step_idx, train_reward)
             if rollout_step_idx % 10 == 0:
                 logger.info(
                     "Rollout step %d, train reward mean %.4f",
                     rollout_step_idx,
-                    rollout_metadata["raw_reward_mean"].item(),
+                    train_reward,
                 )
-            train_step_idx, train_update_idx = grpo_rollout_batch_training_loop(
-                policy_model,
-                train_batch_dataloader,
-                optimizer,
-                device,
-                gradient_accumulation_steps,
-                grpo_clip_range,
-                n_train_epoch_per_rollout,
-                train_step_idx,
-                train_update_idx,
+            train_step_idx, train_update_idx, loop_metrics = (
+                grpo_rollout_batch_training_loop(
+                    policy_model,
+                    train_batch_dataloader,
+                    optimizer,
+                    device,
+                    gradient_accumulation_steps,
+                    grpo_clip_range,
+                    n_train_epoch_per_rollout,
+                    train_step_idx,
+                    train_update_idx,
+                )
+            )
+            metrics.log("loss", rollout_step_idx, loop_metrics["mean_loss"])
+            metrics.log(
+                "clip_fraction", rollout_step_idx, loop_metrics["mean_clip_fraction"]
             )
             rollout_model_path = os.path.join(
                 os.path.dirname(__file__),
@@ -331,12 +458,23 @@ def train_script(
             tokenizer.save_pretrained(rollout_model_path)
             rollout_step_idx += 1
 
+    # Export metric figures
+    figures_dir = os.path.join(
+        os.path.dirname(__file__), "..", "train_output", expt_name, "figures"
+    )
+    metrics.export_figures(figures_dir)
+    metrics.close()
+
 
 if __name__ == "__main__":
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "train_output")
+    os.makedirs(log_dir, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        filename=os.path.join(log_dir, "train.log"),
+        filemode="w",
     )
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -344,6 +482,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--expt", type=str, default="Qwen2.5_Math_1.5B_GRPO", dest="expt_name"
+    )
+    parser.add_argument(
+        "--use_async_grpo",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        dest="use_async_grpo",
     )
     parser.add_argument("--grpo_steps", type=int, default=200, dest="n_grpo_steps")
     parser.add_argument("--rollout_batch_size", type=int, default=256)
@@ -355,7 +499,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--train_epochs", type=int, default=1, dest="n_train_epoch_per_rollout"
     )
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument(
         "--use_lora", action=argparse.BooleanOptionalAction, default=True
     )
