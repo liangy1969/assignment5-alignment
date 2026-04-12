@@ -393,8 +393,12 @@ def train_script(
                 # optimizer
                 optimizer = AdamW(policy_model.parameters(), lr=lr)
             else:
-                # move the model to gpu
+                # move the model and optimizer states back to gpu
                 policy_model.to(device)
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
             assert policy_model is not None
             assert tokenizer is not None
             assert optimizer is not None
@@ -440,6 +444,11 @@ def train_script(
             )
             os.makedirs(rollout_model_path, exist_ok=True)
             policy_model.cpu()
+            if optimizer is not None:
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.cpu()
             torch.cuda.empty_cache()
             if use_lora:
                 merged = copy.deepcopy(policy_model).merge_and_unload()
