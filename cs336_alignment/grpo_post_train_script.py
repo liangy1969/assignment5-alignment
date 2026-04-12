@@ -172,6 +172,44 @@ def grpo_rollout_batch_training_loop(
                     metrics.log(
                         "clip_fraction", step_idx, step_data["clip_fraction"].item()
                     )
+                if "mean_ratio" in step_data:
+                    metrics.log("mean_ratio", step_idx, step_data["mean_ratio"].item())
+                if "unclipped_objective" in step_data:
+                    metrics.log(
+                        "unclipped_objective",
+                        step_idx,
+                        step_data["unclipped_objective"].item(),
+                    )
+                if "clipped_objective" in step_data:
+                    metrics.log(
+                        "clipped_objective",
+                        step_idx,
+                        step_data["clipped_objective"].item(),
+                    )
+                if "approx_kl" in step_data:
+                    metrics.log("approx_kl", step_idx, step_data["approx_kl"].item())
+                if "mean_advantages" in step_data:
+                    metrics.log(
+                        "mean_advantages",
+                        step_idx,
+                        step_data["mean_advantages"].item(),
+                    )
+                if "importance_weights_mean" in step_data:
+                    metrics.log(
+                        "importance_weights_mean",
+                        step_idx,
+                        step_data["importance_weights_mean"].item(),
+                    )
+                    metrics.log(
+                        "importance_weights_max",
+                        step_idx,
+                        step_data["importance_weights_max"].item(),
+                    )
+                    metrics.log(
+                        "importance_weights_min",
+                        step_idx,
+                        step_data["importance_weights_min"].item(),
+                    )
             if (step_idx + 1) % gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -369,6 +407,24 @@ def train_script(
                     "Rollout step %d, val reward %.4f", rollout_step_idx, val_reward
                 )
             rollout_data = rollout(vllm, prompt_batch, sampling_param)
+            # log rollout output lengths
+            all_output_lens = [
+                len(out) for sample in rollout_data for out in sample["outputs"]
+            ]
+            if all_output_lens:
+                mean_len = sum(all_output_lens) / len(all_output_lens)
+                max_len = max(all_output_lens)
+                min_len = min(all_output_lens)
+                metrics.log("rollout_len_mean", rollout_step_idx, mean_len)
+                metrics.log("rollout_len_max", rollout_step_idx, float(max_len))
+                metrics.log("rollout_len_min", rollout_step_idx, float(min_len))
+                logger.info(
+                    "Rollout step %d, output len mean=%.0f min=%d max=%d",
+                    rollout_step_idx,
+                    mean_len,
+                    min_len,
+                    max_len,
+                )
             del vllm
             torch.cuda.empty_cache()
             # load the train model

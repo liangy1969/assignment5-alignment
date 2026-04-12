@@ -320,9 +320,9 @@ def compute_grpo_clip_loss(
     policy_prob_ratio_clipped = torch.clamp(
         policy_prob_ratio, 1 - cliprange, 1 + cliprange
     )
-    weight = torch.minimum(
-        policy_prob_ratio * advantages, policy_prob_ratio_clipped * advantages
-    )
+    unclipped_objective = policy_prob_ratio * advantages
+    clipped_objective = policy_prob_ratio_clipped * advantages
+    weight = torch.minimum(unclipped_objective, clipped_objective)
     if importance_weights is not None:
         weight *= importance_weights
 
@@ -331,11 +331,22 @@ def compute_grpo_clip_loss(
         .float()
         .mean()
     )
+    approx_kl = (old_log_probs - policy_log_probs).mean()
 
-    return -weight, {
+    meta = {
         "clip_fraction": clip_fraction,
         "mean_ratio": policy_prob_ratio.mean(),
+        "unclipped_objective": unclipped_objective.mean(),
+        "clipped_objective": clipped_objective.mean(),
+        "approx_kl": approx_kl,
+        "mean_advantages": advantages.mean(),
     }
+    if importance_weights is not None:
+        meta["importance_weights_mean"] = importance_weights.mean()
+        meta["importance_weights_max"] = importance_weights.max()
+        meta["importance_weights_min"] = importance_weights.min()
+
+    return -weight, meta
 
 
 def compute_policy_gradient_loss(
