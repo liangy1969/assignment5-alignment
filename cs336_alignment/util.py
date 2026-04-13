@@ -325,6 +325,7 @@ def compute_grpo_clip_loss(
     unclipped_objective = policy_prob_ratio * advantages
     clipped_objective = policy_prob_ratio_clipped * advantages
     weight = torch.minimum(unclipped_objective, clipped_objective)
+    kl_loss = None
     if beta is not None and ref_log_probs is not None:
         kl_loss = (
             torch.exp(ref_log_probs - policy_log_probs)
@@ -356,6 +357,8 @@ def compute_grpo_clip_loss(
         meta["importance_weights_mean"] = importance_weights.mean()
         meta["importance_weights_max"] = importance_weights.max()
         meta["importance_weights_min"] = importance_weights.min()
+    if kl_loss is not None:
+        meta["kl_loss"] = kl_loss.mean()
 
     return -weight, meta
 

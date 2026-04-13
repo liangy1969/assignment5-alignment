@@ -203,6 +203,8 @@ def grpo_rollout_batch_training_loop(
                         step_idx,
                         step_data["mean_advantages"].item(),
                     )
+                if "kl_loss" in step_data:
+                    metrics.log("kl_loss", step_idx, step_data["kl_loss"].item())
                 if "importance_weights_mean" in step_data:
                     metrics.log(
                         "importance_weights_mean",
