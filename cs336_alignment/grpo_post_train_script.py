@@ -1,3 +1,5 @@
+from weakref import ref
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import argparse
 import os
@@ -121,6 +123,7 @@ def grpo_rollout_batch_training_loop(
     use_async_grpo: bool = False,
     async_grpo_apply_rollout_importance_sampling: bool = False,
     metrics: MetricsTracker | None = None,
+    kl_beta: float | None = None,
 ) -> tuple[int, int]:
     for epoch_idx in range(n_epoch):
         optimizer.zero_grad()
@@ -153,6 +156,9 @@ def grpo_rollout_batch_training_loop(
             importance_weights = train_batch.get("importance_weights", None)
             if importance_weights is not None:
                 importance_weights = importance_weights.to(device)
+            ref_log_probs = train_batch.get("ref_log_probs", None)
+            if ref_log_probs is not None:
+                ref_log_probs = ref_log_probs.to(device)
             log_probs_and_entropy = get_response_log_probs(
                 model, input_ids, labels, True
             )
@@ -165,6 +171,9 @@ def grpo_rollout_batch_training_loop(
                 advantages,
                 old_log_probs,
                 cliprange,
+                importance_weights=importance_weights,
+                ref_log_probs=ref_log_probs,
+                beta=kl_beta,
             )
             if metrics:
                 metrics.log("loss", step_idx, loss.item())
@@ -351,6 +360,8 @@ def train_script(
     use_std_normalization=True,
     eval_every_n_step: int = 50,
     use_async_grpo: bool = False,
+    use_ref_kl: bool = False,
+    kl_beta: float = 0.04,
 ):
     advantage_eps: float = 1e-6
     assert (
@@ -362,6 +373,7 @@ def train_script(
     logger.info("using device: %s", device)
     # train model; to be initialized later
     policy_model: torch.nn.Module | None = None
+    ref_model: torch.nn.Module | None = None
     tokenizer: PreTrainedTokenizerBase | None = None
     optimizer: torch.optim.Optimizer | None = None
     rollout_model_path: str = model_name
@@ -428,13 +440,41 @@ def train_script(
             del vllm
             torch.cuda.empty_cache()
             # load the train model
+
+            # load reference model
+            if ref_model is None and use_ref_kl:
+                ref_model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.bfloat16,
+                    attn_implementation="flash_attention_2",
+                )
+                if tokenizer is None:
+                    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+            if ref_model is not None and tokenizer is not None:
+                ref_model.to(device)
+                ref_model.eval()
+                train_batch_dataloader, rollout_metadata = (
+                    create_grpo_rollout_batch_dataloader(
+                        ref_model,
+                        tokenizer,
+                        device,
+                        rollout_data,
+                        micro_batch_size,
+                        advantage_eps,
+                        use_std_normalization,
+                    )
+                )
+                ref_model.cpu()
+
             if policy_model is None:
                 policy_model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch.bfloat16,
                     attn_implementation="flash_attention_2",
                 )
-                tokenizer = AutoTokenizer.from_pretrained(model_name)
+                if tokenizer is None:
+                    tokenizer = AutoTokenizer.from_pretrained(model_name)
                 if use_lora:
                     lora_config = LoraConfig(
                         r=16,
@@ -459,19 +499,35 @@ def train_script(
             assert tokenizer is not None
             assert optimizer is not None
             policy_model.eval()
-            train_batch_dataloader, rollout_metadata = (
-                create_grpo_rollout_batch_dataloader(
-                    policy_model,
-                    tokenizer,
-                    device,
-                    rollout_data,
-                    micro_batch_size,
-                    advantage_eps,
-                    use_std_normalization,
+
+            if ref_model is not None and tokenizer is not None:
+                # train_batch_dataloader should have been initialized
+                # we want to update the batch with ref prob and old prob
+                train_batches = []
+                for train_batch in train_batch_dataloader:  # type: ignore
+                    input_ids = train_batch["input_ids"].to(device)
+                    labels = train_batch["labels"].to(device)
+                    log_probs_and_entropy = get_response_log_probs(
+                        policy_model, input_ids, labels, True
+                    )
+                    train_batch["ref_log_probs"] = train_batch["old_log_probs"]
+                    train_batch["old_log_probs"] = log_probs_and_entropy["log_probs"].cpu()  # type: ignore
+                    train_batches.append(train_batch)
+                train_batch_dataloader = train_batches
+            else:
+                train_batch_dataloader, rollout_metadata = (
+                    create_grpo_rollout_batch_dataloader(
+                        policy_model,
+                        tokenizer,
+                        device,
+                        rollout_data,
+                        micro_batch_size,
+                        advantage_eps,
+                        use_std_normalization,
+                    )
                 )
-            )
             policy_model.train()
-            train_reward = rollout_metadata["raw_reward_mean"].item()
+            train_reward = rollout_metadata["raw_reward_mean"].item()  # type: ignore
             metrics.log("train_reward", rollout_step_idx, train_reward)
             if rollout_step_idx % 10 == 0:
                 logger.info(
@@ -481,7 +537,7 @@ def train_script(
                 )
             train_step_idx, train_update_idx = grpo_rollout_batch_training_loop(
                 policy_model,
-                train_batch_dataloader,
+                train_batch_dataloader,  # type: ignore
                 optimizer,
                 device,
                 gradient_accumulation_steps,
@@ -490,6 +546,7 @@ def train_script(
                 train_step_idx,
                 train_update_idx,
                 metrics=metrics,
+                kl_beta=kl_beta if use_ref_kl else None,
             )
             rollout_model_path = os.path.join(
                 os.path.dirname(__file__),
@@ -564,6 +621,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_std_normalization", action=argparse.BooleanOptionalAction, default=True
     )
+    parser.add_argument(
+        "--use_ref_kl",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        dest="use_ref_kl",
+    )
+    parser.add_argument("--kl_beta", type=float, default=0.04)
     parser.add_argument("--eval_every", type=int, default=50, dest="eval_every_n_step")
     args = parser.parse_args()
     train_script(
@@ -580,4 +644,6 @@ if __name__ == "__main__":
         grpo_clip_range=args.grpo_clip_range,
         use_std_normalization=args.use_std_normalization,
         eval_every_n_step=args.eval_every_n_step,
+        use_async_grpo=args.use_async_grpo,
+        kl_beta=args.kl_beta,
     )

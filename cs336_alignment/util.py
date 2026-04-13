@@ -297,6 +297,8 @@ def compute_grpo_clip_loss(
     old_log_probs: torch.Tensor,
     cliprange: float,
     importance_weights: torch.Tensor | None = None,
+    ref_log_probs: torch.Tensor | None = None,
+    beta: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the GRPO-Clip loss.
 
@@ -323,6 +325,15 @@ def compute_grpo_clip_loss(
     unclipped_objective = policy_prob_ratio * advantages
     clipped_objective = policy_prob_ratio_clipped * advantages
     weight = torch.minimum(unclipped_objective, clipped_objective)
+    if beta is not None and ref_log_probs is not None:
+        kl_loss = (
+            torch.exp(ref_log_probs - policy_log_probs)
+            - 1
+            - (ref_log_probs - policy_log_probs)
+        )
+        kl_loss *= policy_prob_ratio
+        weight -= kl_loss * beta
+
     if importance_weights is not None:
         weight *= importance_weights
 
@@ -357,6 +368,8 @@ def compute_policy_gradient_loss(
     old_log_probs: torch.Tensor | None,
     cliprange: float | None,
     importance_weights: torch.Tensor | None,
+    ref_log_probs: torch.Tensor | None,
+    beta: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Wrapper that delegates to the appropriate policy gradient loss function above.
@@ -374,7 +387,13 @@ def compute_policy_gradient_loss(
             and cliprange is not None
         )
         return compute_grpo_clip_loss(
-            advantages, policy_log_probs, old_log_probs, cliprange, importance_weights
+            advantages,
+            policy_log_probs,
+            old_log_probs,
+            cliprange,
+            importance_weights,
+            ref_log_probs=ref_log_probs,
+            beta=beta,
         )
     else:
         raise NotImplementedError
@@ -416,6 +435,8 @@ def grpo_microbatch_train_step(
     old_log_probs: torch.Tensor | None = None,
     cliprange: float | None = None,
     importance_weights: torch.Tensor | None = None,
+    ref_log_probs: torch.Tensor | None = None,
+    beta: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the policy gradient loss and backprop its gradients for a microbatch.
 
@@ -449,6 +470,8 @@ def grpo_microbatch_train_step(
         old_log_probs,
         cliprange,
         importance_weights,
+        ref_log_probs,
+        beta,
     )
     loss_masked_mean = masked_mean(loss, response_mask, -1).mean()
     loss_masked_mean /= gradient_accumulation_steps
