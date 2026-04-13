@@ -657,6 +657,7 @@ if __name__ == "__main__":
         use_std_normalization=args.use_std_normalization,
         eval_every_n_step=args.eval_every_n_step,
         use_async_grpo=args.use_async_grpo,
+        use_ref_kl=args.use_ref_kl,
         kl_beta=args.kl_beta,
         kl_formula=args.kl_formula,
     )
