@@ -471,6 +471,7 @@ def train_script(
                     )
                 )
                 ref_model.cpu()
+                torch.cuda.empty_cache()
 
             if policy_model is None:
                 policy_model = AutoModelForCausalLM.from_pretrained(
