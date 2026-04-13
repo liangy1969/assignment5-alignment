@@ -24,7 +24,7 @@ from torch.optim import AdamW
 from cs336_alignment.gsm_benchmark_script import evaluate_gsm
 from vllm import LLM, SamplingParams
 from peft import LoraConfig, get_peft_model
-from typing import Any
+from typing import Any, Literal
 import torch.nn.functional as F
 import copy
 import matplotlib
@@ -124,6 +124,7 @@ def grpo_rollout_batch_training_loop(
     async_grpo_apply_rollout_importance_sampling: bool = False,
     metrics: MetricsTracker | None = None,
     kl_beta: float | None = None,
+    kl_formula: Literal["raw", "low_variance", "reversed"] = "raw",
 ) -> tuple[int, int]:
     for epoch_idx in range(n_epoch):
         optimizer.zero_grad()
@@ -174,6 +175,7 @@ def grpo_rollout_batch_training_loop(
                 importance_weights=importance_weights,
                 ref_log_probs=ref_log_probs,
                 beta=kl_beta,
+                kl_formula=kl_formula,
             )
             if metrics:
                 metrics.log("loss", step_idx, loss.item())
@@ -364,6 +366,7 @@ def train_script(
     use_async_grpo: bool = False,
     use_ref_kl: bool = False,
     kl_beta: float = 0.04,
+    kl_formula: Literal["raw", "low_variance", "reversed"] = "raw",
 ):
     advantage_eps: float = 1e-6
     assert (
@@ -549,6 +552,7 @@ def train_script(
                 train_update_idx,
                 metrics=metrics,
                 kl_beta=kl_beta if use_ref_kl else None,
+                kl_formula=kl_formula,
             )
             rollout_model_path = os.path.join(
                 os.path.dirname(__file__),
@@ -630,6 +634,12 @@ if __name__ == "__main__":
         dest="use_ref_kl",
     )
     parser.add_argument("--kl_beta", type=float, default=0.04)
+    parser.add_argument(
+        "--kl_formula",
+        type=str,
+        default="raw",
+        choices=["raw", "low_variance", "reversed"],
+    )
     parser.add_argument("--eval_every", type=int, default=50, dest="eval_every_n_step")
     args = parser.parse_args()
     train_script(
@@ -648,4 +658,5 @@ if __name__ == "__main__":
         eval_every_n_step=args.eval_every_n_step,
         use_async_grpo=args.use_async_grpo,
         kl_beta=args.kl_beta,
+        kl_formula=args.kl_formula,
     )
