@@ -513,9 +513,10 @@ def train_script(
                 for train_batch in train_batch_dataloader:  # type: ignore
                     input_ids = train_batch["input_ids"].to(device)
                     labels = train_batch["labels"].to(device)
-                    log_probs_and_entropy = get_response_log_probs(
-                        policy_model, input_ids, labels, True
-                    )
+                    with torch.no_grad():
+                        log_probs_and_entropy = get_response_log_probs(
+                            policy_model, input_ids, labels, False
+                        )
                     train_batch["ref_log_probs"] = train_batch["old_log_probs"]
                     train_batch["old_log_probs"] = log_probs_and_entropy["log_probs"].cpu()  # type: ignore
                     train_batches.append(train_batch)
