@@ -342,8 +342,8 @@ def compute_grpo_clip_loss(
                 - 1
                 - (policy_log_probs - ref_log_probs)
             )
-        kl_loss *= policy_prob_ratio
-        weight -= kl_loss * beta
+        kl_loss_sampled = kl_loss * policy_prob_ratio
+        weight -= kl_loss_sampled * beta
 
     if importance_weights is not None:
         weight *= importance_weights
@@ -369,7 +369,8 @@ def compute_grpo_clip_loss(
         meta["importance_weights_min"] = importance_weights.min()
     if kl_loss is not None:
         meta["kl_loss"] = kl_loss.mean()
-        meta["kl_ref_policy_diff_mean"] = (ref_log_probs - policy_log_probs).mean()
+        meta["kl_loss_sampled"] = kl_loss_sampled.mean() # type: ignore
+        meta["kl_prob_ratio"] = torch.exp(ref_log_probs - policy_log_probs).mean()
 
     return -weight, meta
 
