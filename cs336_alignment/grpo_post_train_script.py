@@ -218,7 +218,22 @@ def grpo_rollout_batch_training_loop(
                         "kl_loss_sampled", step_idx, step_data["kl_loss_sampled"].item()
                     )
                     metrics.log(
+                        "kl_log_prob_diff",
+                        step_idx,
+                        step_data["kl_log_prob_diff"].item(),
+                    )
+                    metrics.log(
+                        "kl_log_prob_diff_max",
+                        step_idx,
+                        step_data["kl_log_prob_diff_max"].item(),
+                    )
+                    metrics.log(
                         "kl_prob_ratio", step_idx, step_data["kl_prob_ratio"].item()
+                    )
+                    metrics.log(
+                        "kl_prob_ratio_max",
+                        step_idx,
+                        step_data["kl_prob_ratio_max"].item(),
                     )
                 if "importance_weights_mean" in step_data:
                     metrics.log(
