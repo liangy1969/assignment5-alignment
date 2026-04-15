@@ -126,27 +126,34 @@ def grpo_rollout_batch_training_loop(
     kl_beta: float | None = None,
     kl_formula: Literal["raw", "low_variance", "reversed"] = "raw",
 ) -> tuple[int, int]:
+
+    if use_async_grpo:
+        train_batches = []
+        for train_batch in train_batch_loader:
+            if async_grpo_apply_rollout_importance_sampling:
+                train_batch["rollout_log_probs"] = train_batch["old_log_probs"]  # type: ignore
+            train_batches.append(train_batch)
+    else:
+        train_batches = train_batch_loader
+
     for epoch_idx in range(n_epoch):
         optimizer.zero_grad()
         if use_async_grpo:
-            train_batches = []
             model.eval()
-            for train_batch in train_batch_loader:
+            for train_batch in train_batches:
                 input_ids = train_batch["input_ids"].to(device)
                 labels = train_batch["labels"].to(device)
-                log_probs_and_entropy = get_response_log_probs(
-                    model, input_ids, labels, True
-                )
+                with torch.no_grad():
+                    log_probs_and_entropy = get_response_log_probs(
+                        model, input_ids, labels, False
+                    )
                 old_log_probs = log_probs_and_entropy["log_probs"]  # type: ignore
                 if async_grpo_apply_rollout_importance_sampling:
-                    rollout_log_probs = train_batch["old_log_probs"].to(device)
+                    rollout_log_probs = train_batch["rollout_log_probs"].to(device)
                     importance_weights = torch.exp(old_log_probs - rollout_log_probs)
                     train_batch["importance_weights"] = importance_weights.cpu()
                 train_batch["old_log_probs"] = old_log_probs.cpu()  # type: ignore
-                train_batches.append(train_batch)
             model.train()
-        else:
-            train_batches = train_batch_loader
 
         for train_batch in train_batches:
             input_ids = train_batch["input_ids"].to(device)
@@ -207,6 +214,11 @@ def grpo_rollout_batch_training_loop(
                     )
                 if "kl_loss" in step_data:
                     metrics.log("kl_loss", step_idx, step_data["kl_loss"].item())
+                    metrics.log(
+                        "kl_ref_policy_diff_mean",
+                        step_idx,
+                        step_data["kl_ref_policy_diff_mean"].item(),
+                    )
                 if "importance_weights_mean" in step_data:
                     metrics.log(
                         "importance_weights_mean",
@@ -552,6 +564,8 @@ def train_script(
                 n_train_epoch_per_rollout,
                 train_step_idx,
                 train_update_idx,
+                use_async_grpo=use_async_grpo,
+                async_grpo_apply_rollout_importance_sampling=use_async_grpo,
                 metrics=metrics,
                 kl_beta=kl_beta if use_ref_kl else None,
                 kl_formula=kl_formula,

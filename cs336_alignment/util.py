@@ -369,6 +369,7 @@ def compute_grpo_clip_loss(
         meta["importance_weights_min"] = importance_weights.min()
     if kl_loss is not None:
         meta["kl_loss"] = kl_loss.mean()
+        meta["kl_ref_policy_diff_mean"] = (ref_log_probs - policy_log_probs).mean()
 
     return -weight, meta
 
