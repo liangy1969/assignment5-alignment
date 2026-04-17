@@ -328,19 +328,16 @@ def compute_grpo_clip_loss(
     weight = torch.minimum(unclipped_objective, clipped_objective)
     kl_loss = None
     if beta is not None and ref_log_probs is not None:
+        policy_lp = policy_log_probs.detach()
         if kl_formula == "raw":
-            kl_loss = ref_log_probs - policy_log_probs
+            kl_loss = ref_log_probs - policy_lp
         elif kl_formula == "low_variance":
             kl_loss = (
-                torch.exp(ref_log_probs - policy_log_probs)
-                - 1
-                - (ref_log_probs - policy_log_probs)
+                torch.exp(ref_log_probs - policy_lp) - 1 - (ref_log_probs - policy_lp)
             )
         elif kl_formula == "reversed":
             kl_loss = (
-                torch.exp(policy_log_probs - ref_log_probs)
-                - 1
-                - (policy_log_probs - ref_log_probs)
+                torch.exp(policy_lp - ref_log_probs) - 1 - (policy_lp - ref_log_probs)
             )
         kl_loss_sampled = kl_loss * policy_prob_ratio
         weight -= kl_loss_sampled * beta
