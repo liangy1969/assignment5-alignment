@@ -300,6 +300,7 @@ def compute_grpo_clip_loss(
     ref_log_probs: torch.Tensor | None = None,
     beta: float | None = None,
     kl_formula: Literal["raw", "low_variance", "reversed"] = "raw",
+    response_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the GRPO-Clip loss.
 
@@ -345,32 +346,63 @@ def compute_grpo_clip_loss(
     if importance_weights is not None:
         weight *= importance_weights
 
-    clip_fraction = (
-        ((policy_prob_ratio < 1 - cliprange) | (policy_prob_ratio > 1 + cliprange))
-        .float()
-        .mean()
-    )
-    approx_kl = (old_log_probs - policy_log_probs).mean()
+    clipped_mask = (
+        (policy_prob_ratio < 1 - cliprange) | (policy_prob_ratio > 1 + cliprange)
+    ).float()
+
+    def _mean(t: torch.Tensor) -> torch.Tensor:
+        if response_mask is not None:
+            return masked_mean(t, response_mask, dim=None)
+        return t.mean()
+
+    clip_fraction = _mean(clipped_mask)
+    approx_kl = _mean(old_log_probs - policy_log_probs)
 
     meta = {
         "clip_fraction": clip_fraction,
-        "mean_ratio": policy_prob_ratio.mean(),
-        "unclipped_objective": unclipped_objective.mean(),
-        "clipped_objective": clipped_objective.mean(),
+        "mean_ratio": _mean(policy_prob_ratio),
+        "unclipped_objective": _mean(unclipped_objective),
+        "clipped_objective": _mean(clipped_objective),
         "approx_kl": approx_kl,
         "mean_advantages": advantages.mean(),
     }
     if importance_weights is not None:
-        meta["importance_weights_mean"] = importance_weights.mean()
-        meta["importance_weights_max"] = importance_weights.max()
-        meta["importance_weights_min"] = importance_weights.min()
+        meta["importance_weights_mean"] = _mean(importance_weights)
+        meta["importance_weights_max"] = (
+            importance_weights.max()
+            if response_mask is None
+            else (
+                importance_weights * response_mask + (1 - response_mask) * float("-inf")
+            ).max()
+        )
+        meta["importance_weights_min"] = (
+            importance_weights.min()
+            if response_mask is None
+            else (
+                importance_weights * response_mask + (1 - response_mask) * float("inf")
+            ).min()
+        )
     if kl_loss is not None:
-        meta["kl_loss"] = kl_loss.mean()
-        meta["kl_loss_sampled"] = kl_loss_sampled.mean()  # type: ignore
-        meta["kl_log_prob_diff"] = (ref_log_probs - policy_log_probs).mean()
-        meta["kl_log_prob_diff_max"] = (ref_log_probs - policy_log_probs).max()
-        meta["kl_prob_ratio"] = torch.exp(ref_log_probs - policy_log_probs).mean()
-        meta["kl_prob_ratio_max"] = torch.exp(ref_log_probs - policy_log_probs).max()
+        meta["kl_loss"] = _mean(kl_loss)
+        meta["kl_loss_sampled"] = _mean(kl_loss_sampled)  # type: ignore
+        meta["kl_log_prob_diff"] = _mean(ref_log_probs - policy_log_probs)
+        meta["kl_log_prob_diff_max"] = (
+            (ref_log_probs - policy_log_probs).max()
+            if response_mask is None
+            else (
+                (ref_log_probs - policy_log_probs) * response_mask
+                + (1 - response_mask) * float("-inf")
+            ).max()
+        )
+        meta["kl_prob_ratio"] = _mean(torch.exp(ref_log_probs - policy_log_probs))
+        meta["kl_prob_ratio_max"] = (
+            torch.exp(ref_log_probs - policy_log_probs).max()
+            if response_mask is None
+            else (
+                torch.exp(ref_log_probs - policy_log_probs) * response_mask
+                + (1 - response_mask) * float("-inf")
+            ).max()
+        )
 
     return -weight, meta
 
@@ -386,6 +418,7 @@ def compute_policy_gradient_loss(
     ref_log_probs: torch.Tensor | None,
     beta: float | None = None,
     kl_formula: Literal["raw", "low_variance", "reversed"] = "raw",
+    response_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Wrapper that delegates to the appropriate policy gradient loss function above.
@@ -411,6 +444,7 @@ def compute_policy_gradient_loss(
             ref_log_probs=ref_log_probs,
             beta=beta,
             kl_formula=kl_formula,
+            response_mask=response_mask,
         )
     else:
         raise NotImplementedError
@@ -491,6 +525,7 @@ def grpo_microbatch_train_step(
         ref_log_probs,
         beta,
         kl_formula,
+        response_mask,
     )
     loss_masked_mean = masked_mean(loss, response_mask, -1).mean()
     loss_masked_mean /= gradient_accumulation_steps
